@@ -2,6 +2,7 @@ use itertools::Itertools;
 use json::Scope;
 use tables::EitherOrBoth as EOB;
 
+mod builtin;
 mod capture;
 pub mod collection;
 mod derivation;
@@ -17,6 +18,10 @@ mod secrets;
 mod storage_mapping;
 mod test_step;
 
+pub use builtin::{
+    IMAGE_TAG_FLAG as BUILTIN_IMAGE_TAG_FLAG, PYTHON_SENTINEL, TYPESCRIPT_SENTINEL,
+    project_root as builtin_project_root,
+};
 pub use derivation::derive_spec_request;
 pub use errors::Error;
 
@@ -74,6 +79,7 @@ pub async fn validate(
     let mut errors = tables::Errors::new();
 
     storage_mapping::walk_all_storage_mappings(&live.storage_mappings, &mut errors);
+    builtin::walk_task_dirs(draft, &mut errors);
 
     // Build all local collections.
     let mut built_collections = collection::walk_all_collections(

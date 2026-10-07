@@ -45,6 +45,8 @@ impl Generate {
 
         build::write_files(&project_root, files)?;
 
+        // Built-in connectors return starters of listed project files which
+        // don't exist yet, which are written only where no file exists.
         let () = local_specs::generate_files(ctx, draft).await?;
         Ok(())
     }
@@ -174,6 +176,7 @@ async fn generate_missing_collection_configs(
     connector_router: &dyn proto_grpc::connector::Router,
 ) -> anyhow::Result<Vec<(url::Url, models::RawValue, doc::Shape)>> {
     let tables::DraftCollection {
+        collection: name,
         model: Some(models::CollectionDef { derive, .. }),
         ..
     } = collection
@@ -206,7 +209,7 @@ async fn generate_missing_collection_configs(
             return Ok(Vec::new());
         }
     };
-    let spec = validation::derive_spec_request(using, shards);
+    let spec = validation::derive_spec_request(name, using, shards);
     let missing_resource_urls: Vec<(url::Url, models::Collection)> = transforms
         .iter()
         .filter_map(|models::TransformDef { lambda, source, .. }| {

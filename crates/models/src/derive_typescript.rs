@@ -1,22 +1,43 @@
+use super::{BuiltinSpec, ProjectFiles, RawValue};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json};
-use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DeriveUsingTypescript {
-    /// # TypeScript module implementing this derivation.
-    /// Module is either a relative URL of a TypeScript module file,
-    /// or is an inline representation of a Typescript module.
-    /// The module must have a exported Derivation variable which
-    /// is an instance implementing the corresponding Derivation
-    /// interface.
+    /// # Deprecated: list the derivation's module in `files`.
+    /// A relative URL of a TypeScript module, or its inline content.
+    /// Validation migrates it into `files`, so a validated model never has one.
+    // It's serialized only if present, so that `flowctl` can send a local
+    // legacy model to the control plane, which migrates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "DeriveUsingTypescript::module_schema")]
-    pub module: super::RawValue,
-    /// # Environment variables made available to the TypeScript module.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub environment: BTreeMap<String, String>,
+    pub module: Option<RawValue>,
+    /// # Files of this TypeScript project.
+    /// The derivation's directory is named for the final component of the
+    /// derived collection's name (`acmeCo/orders` has directory `orders/`),
+    /// and its `orders/mod.ts` exports a `Derivation` class which extends the
+    /// generated `IDerivation`. A `deno.json` is also required, which maps
+    /// `flow/` to `./flow_generated/typescript/` so that modules may import
+    /// their generated types. A `deno.lock` pins its dependencies exactly,
+    /// and is otherwise resolved when the derivation is published.
+    /// `flow_generated/` is reserved.
+    #[serde(default, skip_serializing_if = "ProjectFiles::is_empty")]
+    pub files: ProjectFiles,
+    /// # Configuration of this derivation.
+    /// The configuration is described by `spec.configSchema`, and is delivered
+    /// to the Derivation class. It may not have a `_typescript` property.
+    #[serde(
+        default = "super::project_files::empty_config",
+        skip_serializing_if = "super::project_files::is_empty_config"
+    )]
+    pub config: RawValue,
+    /// # Connector specification of this derivation.
+    /// Its schemas describe the derivation's `config` and the `lambda`
+    /// of each transform, and generate the types delivered to the module.
+    #[serde(default, skip_serializing_if = "BuiltinSpec::is_empty")]
+    pub spec: BuiltinSpec,
 }
 
 impl DeriveUsingTypescript {
@@ -30,7 +51,8 @@ impl DeriveUsingTypescript {
                     "type": "string",
                     "contentMediaType": "text/x.typescript",
                 }
-            ]
+            ],
+            "deprecated": true,
         }))
         .unwrap()
     }

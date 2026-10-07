@@ -1406,6 +1406,162 @@ test://example/int-string-tests:
 }
 
 #[test]
+fn test_builtin_files_errors() {
+    // `testing/int-reverse` doesn't use the V2 runtime, so its `files` beyond
+    // its manifest and entry also fail the V2 guard. `testing/int-halve` lists
+    // neither its manifest nor its entry, which is how a project bootstraps.
+    let errors = common::run_errors(
+        &MODEL_YAML,
+        r#"
+test://example/int-reverse:
+  collections:
+    testing/int-reverse:
+      derive:
+        using:
+          typescript: null
+          python:
+            files:
+              pyproject.toml: ""
+              int-reverse/__init__.py: "class Derivation: pass\n"
+              lib//double.py: "x = 1"
+              ../escape.py: "x = 1"
+              .venv/lib.py: "x = 1"
+              flow_generated/sneaky.py: "x = 1"
+            # `spec` also requires the V2 runtime, and its schemas must compile.
+            spec:
+              configSchema: { type: object, properties: { a: { type: string, pattern: '(' } } }
+
+test://example/int-halve:
+  collections:
+    testing/int-halve:
+      derive:
+        using:
+          typescript:
+            module: null
+            files: {}
+        shards:
+          flags:
+            enable-runtime-v2: "true"
+"#,
+    );
+    insta::assert_debug_snapshot!(errors);
+}
+
+#[test]
+fn test_builtin_legacy_modules_are_migrated() {
+    // A legacy `module` (with its `dependencies`) is migrated into `files`,
+    // and the V1 runtime's `dev` image is still given its module. A model of
+    // `files` may not have `dependencies`.
+    let outcome = common::run(
+        &MODEL_YAML,
+        r#"
+test://example/int-reverse:
+  collections:
+    testing/int-reverse:
+      derive:
+        using:
+          typescript: null
+          python:
+            module: "class Derivation: pass\n"
+            dependencies: { httpx: ">=0.27" }
+
+test://example/int-halve:
+  collections:
+    testing/int-halve:
+      derive:
+        using:
+          typescript: null
+          python:
+            files: { pyproject.toml: "", int-halve/__init__.py: "" }
+            dependencies: { httpx: ">=0.27" }
+        shards:
+          flags:
+            enable-runtime-v2: "true"
+
+driver:
+  derivations:
+    testing/int-reverse:
+      config:
+        image: ghcr.io/estuary/derive-python:dev
+        config:
+          module: "class Derivation: pass\n"
+"#,
+    );
+    let migrated = outcome
+        .built_collections
+        .iter()
+        .find(|row| row.collection.as_str() == "testing/int-reverse")
+        .unwrap();
+
+    insta::assert_debug_snapshot!((
+        &outcome.errors,
+        &migrated.model_fixes,
+        &migrated
+            .model
+            .as_ref()
+            .unwrap()
+            .derive
+            .as_ref()
+            .unwrap()
+            .using,
+    ));
+}
+
+#[test]
+fn test_builtin_task_dirs_collide() {
+    // Built-in tasks of one project root must have distinct directories, but
+    // may list common files of differing content: their agreement is the
+    // user's responsibility. Disabled tasks aren't validated by a connector.
+    // Legacy derivations, which have no directory, are not considered.
+    let errors = common::run_errors(
+        &MODEL_YAML,
+        r#"
+test://example/int-reverse:
+  collections:
+    testing/derived-acme:
+      schema: test://example/int-string.schema
+      key: [/int]
+      derive:
+        using:
+          python:
+            files: { pyproject.toml: "[project]\n", derived-acme/__init__.py: "" }
+        transforms: []
+        shards: { disable: true, flags: { enable-runtime-v2: "true" } }
+    testing/nested/derived-acme:
+      schema: test://example/int-string.schema
+      key: [/int]
+      derive:
+        using:
+          python:
+            files: { pyproject.toml: "[project]\nname = 'other'\n", derived-acme/__init__.py: "" }
+        transforms: []
+        shards: { disable: true, flags: { enable-runtime-v2: "true" } }
+    testing/derived-other:
+      schema: test://example/int-string.schema
+      key: [/int]
+      derive:
+        using:
+          typescript:
+            files: { deno.json: "{}", derived-other/mod.ts: "" }
+        transforms: []
+        shards: { disable: true, flags: { enable-runtime-v2: "true" } }
+    # Shares the project root and final name of the legacy derivation
+    # testing/int-reverse, which has no directory of its own.
+    testing/nested/int-reverse:
+      schema: test://example/int-string.schema
+      key: [/int]
+      derive:
+        using:
+          python:
+            files: { pyproject.toml: "", int-reverse/__init__.py: "" }
+        transforms: []
+        shards: { disable: true, flags: { enable-runtime-v2: "true" } }
+"#,
+    );
+    insta::assert_debug_snapshot!(errors);
+}
+
+#[test]
 fn test_invalid_generated_file_url() {
     let errors = common::run_errors(
         &MODEL_YAML,

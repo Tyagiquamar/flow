@@ -210,6 +210,36 @@ pub enum Error {
     #[error("{category} partition selector field {field} cannot be an empty string")]
     SelectorEmptyString { category: String, field: String },
     #[error(
+        "project file {path} must be `/`-separated names of letters, numbers, `-`, `_`, and `.`, without `.` or `..` components"
+    )]
+    ProjectFilePath { path: String },
+    #[error("project file {path} uses a name which is reserved by the connector")]
+    ProjectFileReserved { path: String },
+    #[error(
+        "list {paths} in `files`: a project lists its manifest and the entry file of each task, and `flowctl generate` writes a starter of each listed file which doesn't exist yet"
+    )]
+    ProjectFilesMissing { paths: String },
+    #[error(
+        "this task's project directory `{dir}/` is also that of {other}, which shares its project: tasks of a project must have distinct final name components"
+    )]
+    ProjectDirCollision { dir: String, other: String },
+    #[error(
+        "`dependencies` is no longer supported: declare dependencies in a `pyproject.toml` listed in the derivation's `files`"
+    )]
+    BuiltinDependenciesRemoved {},
+    #[error("`config` must be an object")]
+    ConfigNotObject {},
+    #[error("`config` cannot have the property `{property}`, which is reserved by the connector")]
+    ConfigReservedProperty { property: String },
+    #[error(
+        "`config` cannot be sealed with `sops`: use a plaintext configuration with a `secrets` stanza instead"
+    )]
+    BuiltinConfigSops {},
+    #[error(
+        "`{field}` requires the V2 runtime, which this derivation does not use.\nPlease add `shards.flags.enable-runtime-v2: \"true\"` to this derivation."
+    )]
+    BuiltinFieldRequiresV2 { field: &'static str },
+    #[error(
         "cannot infer shuffle key types because all transforms use a computed `lambda` or `any`.\nFlow must know the key types that your computed shuffle lambda will output.\nPlease add an explicit `shuffleKeyTypes` to this derivation."
     )]
     ShuffleKeyCannotInfer {},

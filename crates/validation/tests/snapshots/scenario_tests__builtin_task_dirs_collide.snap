@@ -1,0 +1,10 @@
+---
+source: crates/validation/tests/scenario_tests.rs
+expression: errors
+---
+[
+    Error {
+        scope: test://example/int-reverse#/collections/testing~1nested~1derived-acme,
+        error: this task's project directory `derived-acme/` is also that of testing/derived-acme, which shares its project: tasks of a project must have distinct final name components,
+    },
+]
