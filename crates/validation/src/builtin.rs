@@ -1,5 +1,5 @@
-//! Built-in connectors: user-authored Python and TypeScript derivations.
-//! Each is rewritten at build time into an ordinary
+//! Built-in connectors: user-authored Python captures, and Python and
+//! TypeScript derivations. Each is rewritten at build time into an ordinary
 //! image connector, whose configuration is the user's `config` with a pushed-down
 //! sentinel property carrying the task's name, its project `files`, and its
 //! declared `spec`.
@@ -11,6 +11,7 @@
 //! runs user code to do so.
 
 use super::{Error, Scope};
+use proto_flow::{capture, flow};
 use std::collections::BTreeMap;
 
 /// Shard flag which overrides the image tag of every built-in connector,
@@ -21,6 +22,7 @@ pub const PYTHON_SENTINEL: &str = "_python";
 /// Sentinel property of a TypeScript connector's configuration.
 pub const TYPESCRIPT_SENTINEL: &str = "_typescript";
 
+pub const CAPTURE_PYTHON_IMAGE: &str = "ghcr.io/estuary/capture-python";
 pub const DERIVE_PYTHON_IMAGE: &str = "ghcr.io/estuary/derive-python";
 pub const DERIVE_TYPESCRIPT_IMAGE: &str = "ghcr.io/estuary/derive-typescript";
 
@@ -87,7 +89,8 @@ pub fn task_dir(name: &str) -> &str {
 
 /// Image tag of a built-in connector: an explicit `builtin-image-tag` flag, or
 /// else `stable`. Derivations of the V1 runtime instead use the frozen `dev`
-/// images, which predate `files` and `config`.
+/// images, which predate `files` and `config`. There is no `dev` image of
+/// capture-python, which serves either runtime.
 pub fn image_tag<'s>(
     shards: &'s models::ShardTemplate,
     catalog_type: models::CatalogType,
@@ -97,6 +100,63 @@ pub fn image_tag<'s>(
         _ => "stable",
     };
     super::flag_value(&shards.flags, IMAGE_TAG_FLAG).unwrap_or(default)
+}
+
+/// Map a capture's endpoint into the connector Spec request used by
+/// validation, discovery, and local flowctl commands.
+pub fn capture_spec_request(
+    capture: &models::Capture,
+    endpoint: &models::CaptureEndpoint,
+    shards: &models::ShardTemplate,
+) -> capture::request::Spec {
+    let (connector_type, config_json) = match endpoint {
+        models::CaptureEndpoint::Connector(config) => (
+            flow::capture_spec::ConnectorType::Image,
+            serde_json::to_string(config).unwrap(),
+        ),
+        models::CaptureEndpoint::Local(config) => (
+            flow::capture_spec::ConnectorType::Local,
+            serde_json::to_string(config).unwrap(),
+        ),
+        models::CaptureEndpoint::Python(python) => (
+            flow::capture_spec::ConnectorType::Image,
+            serde_json::to_string(&capture_python_connector(capture, python, shards)).unwrap(),
+        ),
+    };
+    capture::request::Spec {
+        connector_type: connector_type as i32,
+        config_json: config_json.into(),
+    }
+}
+
+/// Resolve a Python capture into its image connector.
+/// The `capture` names its directory and its generated module.
+pub fn capture_python_connector(
+    capture: &models::Capture,
+    python: &models::CapturePython,
+    shards: &models::ShardTemplate,
+) -> models::ConnectorConfig {
+    let models::CapturePython {
+        files,
+        config,
+        spec,
+    } = python;
+
+    models::ConnectorConfig {
+        image: format!(
+            "{CAPTURE_PYTHON_IMAGE}:{}",
+            image_tag(shards, models::CatalogType::Capture)
+        ),
+        config: with_sentinel(
+            config,
+            PYTHON_SENTINEL,
+            serde_json::json!({
+                "capture": capture,
+                "files": sentinel_files(files),
+                "spec": spec,
+            }),
+        ),
+    }
 }
 
 /// Resolve a Python derivation into its image connector.
@@ -475,14 +535,21 @@ pub fn bake_generated_files(
 /// the scope and name of each. A legacy derivation having a `module` has no
 /// directory of its own until it's migrated, which happens only as it's built.
 fn builtin_tasks(draft: &tables::DraftCatalog) -> impl Iterator<Item = (&url::Url, &str)> {
-    draft.collections.iter().filter_map(|row| {
+    let captures = draft.captures.iter().filter_map(|row| {
+        let models::CaptureEndpoint::Python(_) = &row.model.as_ref()?.endpoint else {
+            return None;
+        };
+        Some((&row.scope, row.capture.as_str()))
+    });
+    let derivations = draft.collections.iter().filter_map(|row| {
         let is_legacy = match &row.model.as_ref()?.derive.as_ref()?.using {
             models::DeriveUsing::Python(python) => python.module.is_some(),
             models::DeriveUsing::Typescript(typescript) => typescript.module.is_some(),
             _ => return None,
         };
         (!is_legacy).then(|| (&row.scope, row.collection.as_str()))
-    })
+    });
+    captures.chain(derivations)
 }
 
 /// Require that built-in tasks of the draft which share a project root have
@@ -536,6 +603,27 @@ mod test {
         if let models::ProjectFiles::Inline(files) = &mut python.files {
             files.insert("derived/helpers.py".to_string(), None);
         }
+        let mut capture: models::CapturePython = serde_json::from_value(serde_json::json!({
+            "files": {"source-acme/__init__.py": ""},
+            "config": {"credentials": {"client_id": "an-id"}},
+            "spec": {
+                "configSchema": {
+                    "type": "object",
+                    "properties": {"credentials": {"type": "object"}},
+                },
+                "oauth2": {
+                    "provider": "acme",
+                    "authUrlTemplate": "https://acme.example/authorize",
+                    "accessTokenUrlTemplate": "https://acme.example/token",
+                },
+            },
+        }))
+        .unwrap();
+        // A listed file which failed to load is `null`.
+        if let models::ProjectFiles::Inline(files) = &mut capture.files {
+            files.insert("pyproject.toml".to_string(), None);
+        }
+        let name = models::Capture::new("acmeCo/sources/source-acme");
         let derived = models::Collection::new("acmeCo/derived");
 
         let v1 = shards(&[]);
@@ -551,6 +639,13 @@ mod test {
             derive_typescript_connector(&derived, &typescript, &local),
             derive_python_connector(&derived, &python, &v1),
             derive_python_connector(&derived, &python, &v2),
+            // capture-python has no `dev` image.
+            capture_python_connector(
+                &name,
+                &capture,
+                &shards(&[(models::ENABLE_RUNTIME_V2, "false")])
+            ),
+            capture_python_connector(&name, &capture, &local),
         ]);
     }
 

@@ -4,6 +4,7 @@ mod alert_config;
 pub mod authorizations;
 pub mod authz;
 mod builtin_spec;
+mod capture_python;
 mod captures;
 mod catalogs;
 pub mod collate;
@@ -41,6 +42,7 @@ pub use crate::alert_config::{
 };
 pub use crate::labels::{Label, LabelSelector, LabelSet};
 pub use builtin_spec::{BuiltinSpec, OAuth2};
+pub use capture_python::CapturePython;
 pub use captures::{AutoDiscover, CaptureBinding, CaptureDef, CaptureEndpoint};
 pub use catalogs::{Capability, Catalog, CatalogType};
 pub use collections::{CollectionDef, Projection};

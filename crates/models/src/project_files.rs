@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json};
 use std::collections::BTreeMap;
 
-/// Files of a user-authored project, such as a Python or TypeScript derivation.
+/// Files of a user-authored project, such as a Python capture or derivation.
 ///
 /// The form is explicit: an array lists paths of files which are read as
 /// text relative to the specification, and an object carries their contents.

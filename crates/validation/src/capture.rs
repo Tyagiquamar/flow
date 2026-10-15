@@ -136,15 +136,35 @@ async fn walk_capture(
     }
 
     // Unwrap `endpoint` into a connector type and configuration.
-    let (connector_type, config_json): (i32, bytes::Bytes) = match &endpoint {
-        models::CaptureEndpoint::Connector(config) => (
-            flow::capture_spec::ConnectorType::Image as i32,
-            serde_json::to_string(config).unwrap().into(),
-        ),
-        models::CaptureEndpoint::Local(config) => (
-            flow::capture_spec::ConnectorType::Local as i32,
-            serde_json::to_string(config).unwrap().into(),
-        ),
+    let capture::request::Spec {
+        connector_type,
+        config_json,
+    } = crate::builtin::capture_spec_request(capture, &endpoint, &shards);
+
+    // A Python capture's project is rooted at its specification, and is always
+    // validated by its connector, which generates its types and locks it.
+    let (project_root, noop_captures) = match &endpoint {
+        models::CaptureEndpoint::Python(python) => {
+            let scope = scope.push_prop("endpoint");
+            let scope = scope.push_prop("python");
+
+            crate::builtin::walk_files(
+                scope.push_prop("files"),
+                crate::builtin::Language::Python,
+                capture,
+                &python.files,
+                errors,
+            );
+            crate::builtin::walk_config(
+                scope.push_prop("config"),
+                &python.config,
+                crate::builtin::PYTHON_SENTINEL,
+                errors,
+            );
+            crate::builtin::walk_spec(scope.push_prop("spec"), &python.spec, errors);
+            (Some(crate::builtin::project_root(&scope.flatten())), false)
+        }
+        _ => (None, noop_captures),
     };
 
     let secrets_spec = assemble::secrets(&secrets);
@@ -258,11 +278,14 @@ async fn walk_capture(
         },
         linked_collections: Vec::new(),
         secrets: secrets_spec.clone(),
-        project_root: String::new(),
+        project_root: project_root
+            .as_ref()
+            .map(url::Url::to_string)
+            .unwrap_or_default(),
     };
     linked::install_capture_validate(&mut validate_request, interner, indirect_specs);
 
-    let (validated_response, network_ports, config_schema_json) = super::validate_connector(
+    let (mut validated_response, network_ports, config_schema_json) = super::validate_connector(
         scope,
         connectors,
         noop_captures || shards.disable,
@@ -291,6 +314,17 @@ async fn walk_capture(
         &config_schema_json,
         errors,
     );
+
+    // A Python capture's resolved lock is baked into its built spec.
+    let config_json = match &project_root {
+        Some(project_root) => crate::builtin::bake_generated_files(
+            &config_json,
+            crate::builtin::Language::Python,
+            project_root,
+            &mut validated_response.generated_files,
+        ),
+        None => config_json,
+    };
 
     let capture::response::Validated {
         bindings: bindings_validated,

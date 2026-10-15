@@ -1508,10 +1508,84 @@ driver:
 }
 
 #[test]
+fn test_python_capture_builds() {
+    // The connector's generated lock is baked into the built configuration,
+    // and isn't returned to be written into the user's project. An absent
+    // `resourceConfigSchema` is the connector's to default.
+    let outcome = common::run(
+        &MODEL_YAML,
+        r#"
+test://example/int-string-captures:
+  captures:
+    testing/source-acme:
+      endpoint:
+        python:
+          files:
+            pyproject.toml: "[project]\n"
+            source-acme/__init__.py: "class Connector: pass\n"
+          config:
+            greeting: Hello
+          spec:
+            configSchema:
+              type: object
+              properties:
+                greeting: { type: string, default: Howdy }
+      bindings:
+        - target: testing/int-string
+          resource: { name: greetings }
+
+driver:
+  captures:
+    testing/source-acme:
+      connectorType: IMAGE
+      config:
+        image: ghcr.io/estuary/capture-python:stable
+        config:
+          greeting: Hello
+          _python:
+            capture: testing/source-acme
+            files:
+              pyproject.toml: "[project]\n"
+              source-acme/__init__.py: "class Connector: pass\n"
+            spec:
+              configSchema:
+                $id: test://example/int-string-captures?ptr=/captures/testing~1source-acme/endpoint/python/spec/configSchema
+                type: object
+                properties:
+                  greeting: { type: string, default: Howdy }
+      bindings:
+        - resourcePath: [greetings]
+      generatedFiles:
+        test://example/uv.lock: "version = 1\n"
+        test://example/flow_generated/python/testing/source_acme/__init__.py: "generated"
+"#,
+    );
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+
+    let built = outcome
+        .built_captures
+        .iter()
+        .find(|row| row.capture.as_str() == "testing/source-acme")
+        .unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&built.spec.as_ref().unwrap().config_json).unwrap();
+    let generated: Vec<&String> = built
+        .validated
+        .as_ref()
+        .unwrap()
+        .generated_files
+        .keys()
+        .collect();
+
+    insta::assert_json_snapshot!((config, generated));
+}
+
+#[test]
 fn test_builtin_task_dirs_collide() {
     // Built-in tasks of one project root must have distinct directories, but
     // may list common files of differing content: their agreement is the
-    // user's responsibility. Disabled tasks aren't validated by a connector.
+    // user's responsibility. Captures and derivations share the namespace of
+    // directories. Disabled tasks aren't validated by a connector.
     // Legacy derivations, which have no directory, are not considered.
     let errors = common::run_errors(
         &MODEL_YAML,
@@ -1545,17 +1619,77 @@ test://example/int-reverse:
             files: { deno.json: "{}", derived-other/mod.ts: "" }
         transforms: []
         shards: { disable: true, flags: { enable-runtime-v2: "true" } }
+
+test://example/int-string-captures:
+  captures:
+    testing/source-acme:
+      endpoint:
+        python:
+          files: { pyproject.toml: "[project]\n", source-acme/__init__.py: "" }
+      shards: { disable: true }
+      bindings: []
+    testing/nested/source-acme:
+      endpoint:
+        python:
+          files: { pyproject.toml: "[project]\nname = 'other'\n", source-acme/__init__.py: "" }
+      shards: { disable: true }
+      bindings: []
+    testing/source-other:
+      endpoint:
+        python:
+          files: { pyproject.toml: "[project]\nname = 'other'\n", source-other/__init__.py: "" }
+      shards: { disable: true }
+      bindings: []
+    # Shares the directory of the derivation testing/derived-other.
+    testing/nested/derived-other:
+      endpoint:
+        python:
+          files: { pyproject.toml: "", derived-other/__init__.py: "" }
+      shards: { disable: true }
+      bindings: []
     # Shares the project root and final name of the legacy derivation
     # testing/int-reverse, which has no directory of its own.
     testing/nested/int-reverse:
-      schema: test://example/int-string.schema
-      key: [/int]
-      derive:
-        using:
-          python:
-            files: { pyproject.toml: "", int-reverse/__init__.py: "" }
-        transforms: []
-        shards: { disable: true, flags: { enable-runtime-v2: "true" } }
+      endpoint:
+        python:
+          files: { pyproject.toml: "", int-reverse/__init__.py: "" }
+      shards: { disable: true }
+      bindings: []
+"#,
+    );
+    insta::assert_debug_snapshot!(errors);
+}
+
+#[test]
+fn test_python_capture_errors() {
+    let errors = common::run_errors(
+        &MODEL_YAML,
+        r#"
+test://example/int-string-captures:
+  captures:
+    testing/source-acme:
+      endpoint:
+        python:
+          files:
+            pyproject.toml: "[project]\n"
+            # A listed lock is the user's own, and is allowed.
+            uv.lock: "version = 1\n"
+            .venv/lib.py: "x = 1"
+            flow_generated/python/sneaky.py: "x = 1"
+            flow_generated: "x = 1"
+            ../escape.py: "x = 1"
+          config:
+            _python: { capture: sneaky }
+            sops: { mac: whoops }
+          spec:
+            configSchema: { type: object, properties: { a: { type: string, pattern: '(' } } }
+            resourceConfigSchema: { type: not-a-type }
+      bindings: []
+    testing/source-other:
+      endpoint:
+        python:
+          config: [not, an, object]
+      bindings: []
 "#,
     );
     insta::assert_debug_snapshot!(errors);

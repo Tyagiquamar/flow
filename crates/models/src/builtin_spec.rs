@@ -21,8 +21,9 @@ pub struct BuiltinSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Schema>,
     /// # JSON schema of the resource configuration of each binding.
-    /// It's an inline schema, or a relative URL of one. Derivations default
-    /// to the `lambda` of each transform (`{readOnly: boolean}`).
+    /// It's an inline schema, or a relative URL of one. Captures default to
+    /// the CDK's `ResourceConfig` (a `name` and an update `interval`), and
+    /// derivations to the `lambda` of each transform (`{readOnly: boolean}`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_config_schema: Option<Schema>,
     /// # OAuth2 provider of the connector, if it supports OAuth2.
