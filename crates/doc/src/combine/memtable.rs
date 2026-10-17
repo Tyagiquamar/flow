@@ -572,6 +572,27 @@ impl MemDrainer {
             }
         }
 
+        match root.access() {
+            Ok(heap_node) => apply_lone_full_delete(
+                &mut meta,
+                is_full,
+                validator,
+                name,
+                binding,
+                &self.zz_alloc,
+                &heap_node,
+            )?,
+            Err(embedded) => apply_lone_full_delete(
+                &mut meta,
+                is_full,
+                validator,
+                name,
+                binding,
+                &self.zz_alloc,
+                embedded.get(),
+            )?,
+        }
+
         let outcomes = if meta.known_valid() {
             Vec::new() // Skip validation.
         } else {
@@ -662,6 +683,39 @@ where
         Err(embedded) => validator.validate(embedded.get(), &filter),
     };
     valid.map_err(|invalid| Error::FailedValidation(failed_name(name, binding), invalid))
+}
+
+/// Under full reduction, a lone document is never reduced into another, so the
+/// combiner must evaluate its own reduction annotations for the deleted flag.
+pub(super) fn apply_lone_full_delete<'alloc, N: json::AsNode>(
+    meta: &mut Meta,
+    is_full: bool,
+    validator: &mut crate::Validator,
+    name: &str,
+    binding: usize,
+    alloc: &'alloc bumpalo::Bump,
+    node: &N,
+) -> Result<(), Error> {
+    if !is_full || meta.deleted() {
+        return Ok(());
+    }
+
+    let outcomes = validator
+        .validate(node, validation::reduce_filter)
+        .map_err(|invalid| Error::FailedValidation(failed_name(name, binding), invalid))?;
+
+    match reduce::reduce(
+        LazyNode::Node(node),
+        LazyNode::Node(node),
+        &outcomes,
+        alloc,
+        true,
+    ) {
+        Ok((_, deleted)) if deleted => meta.set_deleted(true),
+        Ok(_) => {}
+        Err(err) => return Err(Error::Reduce(err)),
+    }
+    Ok(())
 }
 
 /// Name a failed validation: the shared validator's name qualified by its binding.
@@ -1350,6 +1404,54 @@ mod test {
                 (json!({"key": "k", "v": ["b"]}), false),
             ],
         );
+    }
+
+    #[test]
+    fn test_lone_delete_annotation_full_reduction() {
+        let schema = build_schema(
+            &url::Url::parse("http://example/schema").unwrap(),
+            &json!({
+                "properties": {
+                    "key": { "type": "string" },
+                    "v": { "type": "string" },
+                },
+                "reduce": { "strategy": "lastWriteWins", "delete": true },
+            }),
+        )
+        .unwrap();
+        let spec = Spec::with_bindings(
+            [(
+                true,
+                vec![Extractor::with_default(
+                    "/key",
+                    &SerPolicy::noop(),
+                    json!("def"),
+                )],
+                0,
+            )],
+            [("test", Validator::new(schema).unwrap())],
+            Vec::new(),
+        );
+        let mut acc =
+            crate::combine::Accumulator::new(spec, tempfile::tempfile().unwrap()).unwrap();
+        {
+            let mt = acc.memtable().unwrap();
+            mt.add(
+                0,
+                HeapNode::from_node(&json!({"key": "k", "v": "gone"}), mt.alloc()),
+                false,
+            )
+            .unwrap();
+        }
+
+        let drained = acc
+            .into_drainer()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(drained.len(), 1);
+        assert!(drained[0].meta.deleted());
     }
 
     #[test]

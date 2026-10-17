@@ -509,6 +509,28 @@ impl<F: io::Read + io::Seek> SpillDrainer<F> {
             break reduced;
         };
 
+        let name = &self.spec.names[validator_index];
+        match &reduced {
+            None => super::memtable::apply_lone_full_delete(
+                &mut meta,
+                is_full,
+                validator,
+                name,
+                binding,
+                &self.alloc,
+                root.get(),
+            )?,
+            Some(reduced) => super::memtable::apply_lone_full_delete(
+                &mut meta,
+                is_full,
+                validator,
+                name,
+                binding,
+                &self.alloc,
+                reduced,
+            )?,
+        }
+
         let outcomes = if meta.known_valid() {
             Vec::new() // Skip validation.
         } else {
